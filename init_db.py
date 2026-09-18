@@ -10,6 +10,14 @@ CREATE TABLE IF NOT EXISTS recipes (
     instructions TEXT NOT NULL DEFAULT '',
     is_public INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 SEED = [
@@ -35,6 +43,7 @@ SEED = [
 
 connection = sqlite3.connect("recipes.db")
 connection.executescript(SCHEMA)
+
 existing = connection.execute("SELECT COUNT(*) FROM recipes").fetchone()[0]
 if existing == 0:
     connection.executemany(
@@ -46,4 +55,5 @@ if existing == 0:
     print(f"Created recipes.db and seeded {len(SEED)} recipes.")
 else:
     print(f"recipes.db already has {existing} recipes - nothing to do.")
+
 connection.close()
