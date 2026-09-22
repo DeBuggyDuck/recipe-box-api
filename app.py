@@ -3,7 +3,17 @@
 A working Flask + SQLite CRUD API for recipes and users.
 """
 
-from datetime import datetime, timezone
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+
+from datetime import datetime, timedelta, timezone
+
+import jwt
+
 import sqlite3
 
 from flask import Flask, g, jsonify, request, abort
@@ -114,7 +124,7 @@ def register():
             "message": "A user with that username or email already exists"
         }), 409
 
-    # 3. Retrieve and return the created record via safe dict serializer
+    # 3. Retrieve and return tclearhe created record via safe dict serializer
     row = db.execute(
         "SELECT id, username, email, created_at FROM users WHERE id = ?",
         (cur.lastrowid,),
@@ -124,15 +134,15 @@ def register():
 
 
 # ==========================================
-# AUTHENTICATION / LOGIN ROUTE
+# AUTHENTICATION / LOGIN ROUTE  
 # ==========================================
-
-
+                    
+                 
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True)
     if not data:
-        return (
+        return ( 
             jsonify(
                 {
                     "error": "Bad Request",
@@ -141,10 +151,10 @@ def login():
             ),
             400,
         )
-
+        
     username = data.get("username")
     password = data.get("password")
-
+              
     # Enforce non-empty string types
     if (
         not isinstance(username, str)
@@ -155,14 +165,41 @@ def login():
         return (
             jsonify(
                 {
-                    "error": "Bad Request",
+                    "error": "Bad Request", 
                     "message": (
                         "username and password are required non-empty strings"
                     ),
                 }
-            ),
+        ),
             400,
         )
+    
+    db = get_db()
+    query = (
+        "SELECT id, username, email, password_hash, created_at FROM users"
+        " WHERE username = ?"
+    )
+    row = db.execute(query, (username.strip(),)).fetchone()
+              
+    # User not found or hash verification failed -> 401 Unauthorized
+    if row is None or not verify_password(row["password_hash"], password):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Invalid credentials"}
+        ),
+            401,
+        )
+        
+    # --- MODIFIED 200 SUCCESS SECTION ---
+    payload = {
+        "user_id": row["id"],
+        "username": row["username"],
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1)
+    }
+
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+    return jsonify({"token": token}), 200
 
     db = get_db()
     query = (
