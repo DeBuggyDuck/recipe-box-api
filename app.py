@@ -3,22 +3,17 @@
 A working Flask + SQLite CRUD API for recipes and users.
 """
 
+from datetime import datetime, timedelta, timezone
 import os
+import sqlite3
+from auth_utils import hash_password, verify_password
 from dotenv import load_dotenv
+from flask import Flask, g, jsonify, request
+import jwt
 
 load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET")
-
-from datetime import datetime, timedelta, timezone
-
-import jwt
-
-import sqlite3
-
-from flask import Flask, g, jsonify, request, abort
-
-from auth_utils import hash_password, verify_password
 
 DATABASE = "recipes.db"
 
@@ -83,10 +78,15 @@ def hash_test():
 def register():
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({
-            "error": "Bad Request",
-            "message": "Request body must be valid JSON"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "Bad Request",
+                    "message": "Request body must be valid JSON",
+                }
+            ),
+            400,
+        )
 
     username = data.get("username")
     email = data.get("email")
@@ -94,14 +94,25 @@ def register():
 
     # 1. Enforce non-empty string types
     if (
-        not isinstance(username, str) or not username.strip() or
-        not isinstance(email, str) or not email.strip() or
-        not isinstance(password, str) or not password.strip()
+        not isinstance(username, str)
+        or not username.strip()
+        or not isinstance(email, str)
+        or not email.strip()
+        or not isinstance(password, str)
+        or not password.strip()
     ):
-        return jsonify({
-            "error": "Bad Request",
-            "message": "username, email, and password are required non-empty strings"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "Bad Request",
+                    "message": (
+                        "username, email, and password are required non-empty"
+                        " strings"
+                    ),
+                }
+            ),
+            400,
+        )
 
     clean_username = username.strip()
     clean_email = email.strip()
@@ -119,12 +130,17 @@ def register():
         )
         db.commit()
     except sqlite3.IntegrityError:
-        return jsonify({
-            "error": "Conflict",
-            "message": "A user with that username or email already exists"
-        }), 409
+        return (
+            jsonify(
+                {
+                    "error": "Conflict",
+                    "message": "A user with that username or email already exists",
+                }
+            ),
+            409,
+        )
 
-    # 3. Retrieve and return tclearhe created record via safe dict serializer
+    # 3. Retrieve and return the created record via safe dict serializer
     row = db.execute(
         "SELECT id, username, email, created_at FROM users WHERE id = ?",
         (cur.lastrowid,),
@@ -134,15 +150,15 @@ def register():
 
 
 # ==========================================
-# AUTHENTICATION / LOGIN ROUTE  
+# AUTHENTICATION / LOGIN ROUTE
 # ==========================================
-                    
-                 
+
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True)
     if not data:
-        return ( 
+        return (
             jsonify(
                 {
                     "error": "Bad Request",
@@ -151,10 +167,10 @@ def login():
             ),
             400,
         )
-        
+
     username = data.get("username")
     password = data.get("password")
-              
+
     # Enforce non-empty string types
     if (
         not isinstance(username, str)
@@ -165,41 +181,14 @@ def login():
         return (
             jsonify(
                 {
-                    "error": "Bad Request", 
+                    "error": "Bad Request",
                     "message": (
                         "username and password are required non-empty strings"
                     ),
                 }
-        ),
+            ),
             400,
         )
-    
-    db = get_db()
-    query = (
-        "SELECT id, username, email, password_hash, created_at FROM users"
-        " WHERE username = ?"
-    )
-    row = db.execute(query, (username.strip(),)).fetchone()
-              
-    # User not found or hash verification failed -> 401 Unauthorized
-    if row is None or not verify_password(row["password_hash"], password):
-        return (
-            jsonify(
-                {"error": "Unauthorized", "message": "Invalid credentials"}
-        ),
-            401,
-        )
-        
-    # --- MODIFIED 200 SUCCESS SECTION ---
-    payload = {
-        "user_id": row["id"],
-        "username": row["username"],
-        "exp": datetime.now(timezone.utc) + timedelta(hours=1)
-    }
-
-    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-    return jsonify({"token": token}), 200
 
     db = get_db()
     query = (
@@ -217,7 +206,16 @@ def login():
             401,
         )
 
-    return jsonify(user_to_dict(row)), 200
+    # Success path: issue signed JWT
+    payload = {
+        "user_id": row["id"],
+        "username": row["username"],
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+    return jsonify({"token": token}), 200
 
 
 # ==========================================
@@ -248,24 +246,60 @@ def get_recipe(recipe_id):
 
 @app.route("/recipes", methods=["POST"])
 def create_recipe():
+    # 1. Read Authorization header
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    # 2. Extract and decode the token
+    token = auth_header.split(" ", 1)[1]
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        current_user_id = claims["user_id"]
+    except (jwt.PyJWTError, KeyError):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    # 3. Payload validation
     data = request.get_json(silent=True)
     if not data or not data.get("title") or not data.get("ingredients"):
-        return jsonify({"error": "title and ingredients are required"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "Bad Request",
+                    "message": "title and ingredients are required",
+                }
+            ),
+            400,
+        )
+
+    # 4. Insert recipe associated with the verified user
     db = get_db()
     try:
         cur = db.execute(
-            "INSERT INTO recipes (title, ingredients, instructions, is_public) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO recipes (title, ingredients, instructions, is_public,"
+            " user_id) VALUES (?, ?, ?, ?, ?)",
             (
                 data["title"],
                 data["ingredients"],
                 data.get("instructions", ""),
                 1 if data.get("is_public", True) else 0,
+                current_user_id,
             ),
         )
         db.commit()
     except sqlite3.IntegrityError:
         return jsonify({"error": "a recipe with that title already exists"}), 409
+
     row = db.execute(
         "SELECT * FROM recipes WHERE id = ?", (cur.lastrowid,)
     ).fetchone()
@@ -274,9 +308,33 @@ def create_recipe():
 
 @app.route("/recipes/<int:recipe_id>", methods=["PATCH"])
 def update_recipe(recipe_id):
+    # 1. Read and verify Authorization header upfront
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    token = auth_header.split(" ", 1)[1]
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        current_user_id = claims["user_id"]
+    except (jwt.PyJWTError, KeyError):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    # 2. Existing payload validation & update logic
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "a JSON body is required"}), 400
+
     fields, values = [], []
     for column in ("title", "ingredients", "instructions"):
         if column in data:
@@ -287,6 +345,7 @@ def update_recipe(recipe_id):
         values.append(1 if data["is_public"] else 0)
     if not fields:
         return jsonify({"error": "nothing to update"}), 400
+
     values.append(recipe_id)
     db = get_db()
     try:
@@ -296,16 +355,41 @@ def update_recipe(recipe_id):
         db.commit()
     except sqlite3.IntegrityError:
         return jsonify({"error": "a recipe with that title already exists"}), 409
+
     if cur.rowcount == 0:
         return jsonify({"error": "recipe not found"}), 404
+
     row = db.execute(
         "SELECT * FROM recipes WHERE id = ?", (recipe_id,)
     ).fetchone()
-    return jsonify(recipe_to_dict(row))
+    return jsonify(recipe_to_dict(row)), 200
 
 
 @app.route("/recipes/<int:recipe_id>", methods=["DELETE"])
 def delete_recipe(recipe_id):
+    # 1. Read and verify Authorization header upfront
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    token = auth_header.split(" ", 1)[1]
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        current_user_id = claims["user_id"]
+    except (jwt.PyJWTError, KeyError):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    # 2. Existing delete logic
     db = get_db()
     cur = db.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     db.commit()
