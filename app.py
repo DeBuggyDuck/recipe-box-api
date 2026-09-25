@@ -208,10 +208,10 @@ def login():
 
     # Success path: issue signed JWT
     payload = {
-        "user_id": row["id"],
-        "username": row["username"],
-        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-    }
+            "user_id": row["id"],
+            "username": row["username"],
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
 
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -256,11 +256,21 @@ def create_recipe():
             401,
         )
 
-    # 2. Extract and decode the token
+# 2. Extract and decode the token
     token = auth_header.split(" ", 1)[1]
     try:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         current_user_id = claims["user_id"]
+    except jwt.ExpiredSignatureError:
+        return (
+            jsonify(
+                {
+                    "error": "Unauthorized",
+                    "message": "Token has expired. Please log in again.",
+                }
+            ),
+            401,
+        )
     except (jwt.PyJWTError, KeyError):
         return (
             jsonify(
