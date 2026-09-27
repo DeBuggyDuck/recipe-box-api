@@ -1,6 +1,7 @@
 """Recipe Box API — BE104 course skeleton.
 
 A working Flask + SQLite CRUD API for recipes and users.
+Completed through Lesson 10
 """
 
 from datetime import datetime, timedelta, timezone
