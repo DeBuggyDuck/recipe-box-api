@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Recipe Box Client</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    fieldset { margin-bottom: 1.5rem; padding: 1rem; border-radius: 6px; border: 1px solid #ccc; }
+    input, textarea, button { display: block; width: 100%; margin: 0.5rem 0 1rem; padding: 0.5rem; box-sizing: border-box; }
+    button { cursor: pointer; background: #0066cc; color: white; border: none; font-weight: bold; border-radius: 4px; }
+    button:hover { background: #0052a3; }
+    .recipe-card { border: 1px solid #ddd; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; }
+    .badge { font-size: 0.8rem; background: #eee; padding: 0.2rem 0.5rem; border-radius: 3px; }
+    pre { background: #f4f4f4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+
+  <h1>🍳 Recipe Box UI</h1>
+
+  <!-- AUTH SECTION -->
+  <fieldset>
+    <legend>Account & Authentication</legend>
+    <div id="authStatus">Status: <strong>Not Logged In</strong></div>
+    
+    <h4>Login</h4>
+    <input type="text" id="loginUsername" placeholder="Username" />
+    <input type="password" id="loginPassword" placeholder="Password" />
+    <button onclick="handleLogin()">Log In</button>
+
+    <h4>Register New User</h4>
+    <input type="text" id="regUsername" placeholder="Username" />
+    <input type="email" id="regEmail" placeholder="Email" />
+    <input type="password" id="regPassword" placeholder="Password" />
+    <button onclick="handleRegister()">Register</button>
+    <button onclick="handleLogout()" style="background: #666;">Log Out</button>
+  </fieldset>
+
+  <!-- RECIPES SECTION -->
+  <fieldset>
+    <legend>Recipes</legend>
+    <button onclick="loadRecipes()" style="background: #28a745;">Refresh Recipes List</button>
+
+    <h4>Add New Recipe</h4>
+    <input type="text" id="recipeTitle" placeholder="Recipe Title" />
+    <textarea id="recipeIngredients" placeholder="Ingredients"></textarea>
+    <textarea id="recipeInstructions" placeholder="Instructions"></textarea>
+    <label>
+      <input type="checkbox" id="recipeIsPublic" checked style="display:inline; width:auto;" /> Public Recipe
+    </label>
+    <button onclick="handleCreateRecipe()">Save Recipe</button>
+
+    <div id="recipeList"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Server Console / Error Messages</legend>
+    <pre id="outputLog">Ready.</pre>
+  </fieldset>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:5001";
+
+    function log(msg) {
+      document.getElementById("outputLog").innerText = typeof msg === "object" ? JSON.stringify(msg, null, 2) : msg;
+    }
+
+    function getToken() {
+      return localStorage.getItem("jwt_token");
+    }
+
+    function updateAuthStatus() {
+      const token = getToken();
+      const user = localStorage.getItem("username");
+      const statusDiv = document.getElementById("authStatus");
+      if (token && user) {
+        statusDiv.innerHTML = `Status: Logged in as <strong>${user}</strong>`;
+      } else {
+        statusDiv.innerHTML = "Status: <strong>Not Logged In</strong>";
+      }
+    }
+
+// 1. REGISTER
+    async function handleRegister() {
+      const regUser = document.getElementById("regUsername");
+      const regEmail = document.getElementById("regEmail");
+      const regPass = document.getElementById("regPassword");
+
+      const payload = {
+        username: regUser.value,
+        email: regEmail.value,
+        password: regPass.value
+      };
+
+      const res = await fetch(`${API_BASE}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      log(data);
+
+      // --- CLEAR FIELDS ON SUCCESS HERE ---
+      if (res.ok) {
+        regUser.value = "";
+        regEmail.value = "";
+        regPass.value = "";
+      }
+    }
+
+// 2. LOGIN (Stores JWT & Clears Form)
+    async function handleLogin() {
+      const userInput = document.getElementById("loginUsername");
+      const passInput = document.getElementById("loginPassword");
+
+      const payload = {
+        username: userInput.value,
+        password: passInput.value
+      };
+      const res = await fetch(`${API_BASE}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      log(data);
+      if (res.ok && data.token) {
+        localStorage.setItem("jwt_token", data.token);
+        localStorage.setItem("username", payload.username);
+        userInput.value = "";
+        passInput.value = "";
+        updateAuthStatus();
+        loadRecipes();
+      }
+    }
+
+    // --- INSERT HANDLE LOGOUT RIGHT HERE ---
+    function handleLogout() {
+      // 1. Wipe client-side storage
+      localStorage.removeItem("jwt_token");
+      localStorage.removeItem("username");
+
+      // 2. Clear credentials from inputs
+      document.getElementById("loginUsername").value = "";
+      document.getElementById("loginPassword").value = "";
+
+      // 3. Reset the status display
+      updateAuthStatus();
+
+      // 4. Clear the active recipe list from view
+      const listDiv = document.getElementById("recipeList");
+      if (listDiv) {
+        listDiv.innerHTML = "";
+      }
+
+      log("Logged out. Local token cleared from browser storage.");
+    }
+
+    // 3. FETCH RECIPES
+    async function loadRecipes() {
+      const headers = {};
+      const token = getToken();
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const res = await fetch(`${API_BASE}/recipes`, { headers });
+      const data = await res.json();
+      log(data);
+      const listDiv = document.getElementById("recipeList");
+      listDiv.innerHTML = "";
+      if (Array.isArray(data)) {
+        data.forEach(r => {
+          const card = document.createElement("div");
+          card.className = "recipe-card";
+          card.innerHTML = `
+            <strong>#${r.id} ${r.title}</strong>
+            <span class="badge">${r.is_public ? "Public" : "Private"}</span>
+            <p><strong>Ingredients:</strong> ${r.ingredients}</p>
+            <button onclick="handleDelete(${r.id})" style="background:#cc0000; width:auto; padding:0.2rem 0.5rem; display:inline;">Delete</button>
+          `;
+          listDiv.appendChild(card);
+        });
+      }
+    }
+
+    // 4. CREATE RECIPE
+    async function handleCreateRecipe() {
+      const token = getToken();
+      if (!token) return log("Error: You must log in first.");
+
+      const payload = {
+        title: document.getElementById("recipeTitle").value,
+        ingredients: document.getElementById("recipeIngredients").value,
+        instructions: document.getElementById("recipeInstructions").value,
+        is_public: document.getElementById("recipeIsPublic").checked
+      };
+
+      const res = await fetch(`${API_BASE}/recipes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      log(data);
+      if (res.ok) loadRecipes();
+    }
+
+    // 5. DELETE RECIPE
+    async function handleDelete(recipeId) {
+      const token = getToken();
+      if (!token) return log("Error: You must log in first.");
+
+      const res = await fetch(`${API_BASE}/recipes/${recipeId}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 204) {
+        log(`Recipe ${recipeId} deleted successfully.`);
+        loadRecipes();
+      } else {
+        const data = await res.json();
+        log(data);
+      }
+    }
+
+    updateAuthStatus();
+  </script>
+</body>
+</html>
