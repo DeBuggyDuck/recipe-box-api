@@ -192,8 +192,7 @@ def login():
 
     db = get_db()
     query = (
-        "SELECT id, username, email, password_hash, created_at FROM users"
-        " WHERE username = ?"
+        "SELECT id, username, email, password_hash, role, created_at FROM users WHERE username = ?"
     )
     row = db.execute(query, (username.strip(),)).fetchone()
 
@@ -210,6 +209,7 @@ def login():
     payload = {
             "user_id": row["id"],
             "username": row["username"],
+            "role": row["role"],
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         }
 
@@ -230,8 +230,33 @@ def hello():
 
 @app.route("/recipes", methods=["GET"])
 def list_recipes():
-    rows = get_db().execute("SELECT * FROM recipes ORDER BY id").fetchall()
-    return jsonify([recipe_to_dict(r) for r in rows])
+    db = get_db()
+    current_user_id = None
+
+    # Check if caller passed an optional Authorization token
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            current_user_id = claims.get("user_id")
+        except (jwt.PyJWTError, KeyError):
+            pass  # Treat invalid/expired tokens as anonymous
+
+    # Filter based on auth state
+    if current_user_id is not None:
+        # Logged-in user sees public recipes + their own private recipes
+        rows = db.execute(
+            "SELECT * FROM recipes WHERE is_public = 1 OR user_id = ? ORDER BY id",
+            (current_user_id,),
+        ).fetchall()
+    else:
+        # Anonymous browser/caller only sees public recipes
+        rows = db.execute(
+            "SELECT * FROM recipes WHERE is_public = 1 ORDER BY id"
+        ).fetchall()
+
+    return jsonify([recipe_to_dict(r) for r in rows]), 200
 
 
 @app.route("/recipes/<int:recipe_id>", methods=["GET"])
@@ -381,6 +406,7 @@ def update_recipe(recipe_id):
     try:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         current_user_id = claims["user_id"]
+        current_role = claims.get("role")
     except jwt.ExpiredSignatureError:
         return (
             jsonify(
@@ -417,7 +443,7 @@ def update_recipe(recipe_id):
 
     db = get_db()
 
-    # 3. Check existence and ownership
+    # 3. Check existence
     recipe = db.execute(
         "SELECT user_id FROM recipes WHERE id = ?", (recipe_id,)
     ).fetchone()
@@ -425,7 +451,8 @@ def update_recipe(recipe_id):
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe["user_id"] != current_user_id:
+    # 4. Enforce ownership check with admin override
+    if recipe["user_id"] != current_user_id and current_role != "admin":
         return (
             jsonify(
                 {"error": "Forbidden", "message": "You do not own this recipe"}
@@ -433,13 +460,12 @@ def update_recipe(recipe_id):
             403,
         )
 
-    # 4. Perform the update scoped to the owner
+    # 5. Perform the update
     values.append(recipe_id)
-    values.append(current_user_id)
 
     try:
         db.execute(
-            f"UPDATE recipes SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+            f"UPDATE recipes SET {', '.join(fields)} WHERE id = ?",
             values,
         )
         db.commit()
@@ -471,6 +497,7 @@ def delete_recipe(recipe_id):
     try:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         current_user_id = claims["user_id"]
+        current_role = claims.get("role")
     except jwt.ExpiredSignatureError:
         return (
             jsonify(
@@ -491,7 +518,7 @@ def delete_recipe(recipe_id):
 
     db = get_db()
 
-    # 2. Check existence and ownership
+    # 2. Check existence
     recipe = db.execute(
         "SELECT user_id FROM recipes WHERE id = ?", (recipe_id,)
     ).fetchone()
@@ -499,19 +526,20 @@ def delete_recipe(recipe_id):
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe["user_id"] != current_user_id:
+    # 3. Enforce ownership check with admin override
+    if recipe["user_id"] != current_user_id and current_role != "admin":
         return (
             jsonify(
-                {"error": "Forbidden", "message": "You do not own this recipe"}
+                {
+                    "error": "Forbidden",
+                    "message": "You are not allowed to delete this recipe",
+                }
             ),
             403,
         )
 
-    # 3. Perform scoped deletion
-    db.execute(
-        "DELETE FROM recipes WHERE id = ? AND user_id = ?",
-        (recipe_id, current_user_id),
-    )
+    # 4. Perform deletion
+    db.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     db.commit()
 
     return "", 204
