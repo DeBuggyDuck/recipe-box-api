@@ -4,6 +4,7 @@ A working Flask + SQLite CRUD API for recipes and users.
 Completed through Lesson 10
 """
 
+from flask_cors import CORS
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 import os
@@ -11,7 +12,7 @@ import sqlite3
 
 from auth_utils import hash_password, verify_password
 from dotenv import load_dotenv
-from flask import Flask, g, jsonify, request
+from flask import Flask, g, jsonify, request, send_file
 import jwt
 
 load_dotenv()
@@ -21,7 +22,7 @@ JWT_SECRET = os.getenv("JWT_SECRET")
 DATABASE = "recipes.db"
 
 app = Flask(__name__)
-
+CORS(app)
 
 # ==========================================
 # DATABASE LIFECYCLE
@@ -287,37 +288,44 @@ def login():
 
 
 @app.route("/", methods=["GET"])
-def hello():
-    return jsonify({"message": "Recipe Box API", "recipes": "/recipes"})
-
+def home():
+    return send_file("index.html")
 
 @app.route("/recipes", methods=["GET"])
 def list_recipes():
-    db = get_db()
-    current_user_id = None
+  db = get_db()
+  current_user_id = None
+  current_role = "user"
 
-    # Optional bearer token check
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1)[1]
-        try:
-            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            current_user_id = claims.get("user_id")
-        except (jwt.PyJWTError, KeyError):
-            pass
+  # Extract token if supplied
+  auth_header = request.headers.get("Authorization")
+  if auth_header and auth_header.startswith("Bearer "):
+    token = auth_header.split(" ", 1)[1]
+    try:
+      claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+      current_user_id = claims.get("user_id")
+      current_role = claims.get("role", "user")
+    except (jwt.PyJWTError, KeyError):
+      pass  # Fall back to anonymous
 
-    if current_user_id is not None:
-        rows = db.execute(
-            "SELECT * FROM recipes WHERE is_public = 1 OR user_id = ? ORDER BY"
-            " id",
-            (current_user_id,),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT * FROM recipes WHERE is_public = 1 ORDER BY id"
-        ).fetchall()
+  # Admin sees ALL recipes in the system
+  if current_role == "admin":
+    rows = db.execute("SELECT * FROM recipes ORDER BY id").fetchall()
 
-    return jsonify([recipe_to_dict(r) for r in rows]), 200
+  # Ordinary logged-in user sees public + their own private recipes
+  elif current_user_id is not None:
+    rows = db.execute(
+        "SELECT * FROM recipes WHERE is_public = 1 OR user_id = ? ORDER BY id",
+        (current_user_id,),
+    ).fetchall()
+
+  # Anonymous visitor only sees public recipes
+  else:
+    rows = db.execute(
+        "SELECT * FROM recipes WHERE is_public = 1 ORDER BY id"
+    ).fetchall()
+
+  return jsonify([recipe_to_dict(r) for r in rows]), 200
 
 
 @app.route("/recipes/<int:recipe_id>", methods=["GET"])
