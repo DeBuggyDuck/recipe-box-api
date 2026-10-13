@@ -1,10 +1,8 @@
 """Recipe Box API — BE104 course skeleton.
 
 A working Flask + SQLite CRUD API for recipes and users.
-Completed through Lesson 10
 """
 
-from flask_cors import CORS
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 import os
@@ -13,12 +11,12 @@ import sqlite3
 from auth_utils import hash_password, verify_password
 from dotenv import load_dotenv
 from flask import Flask, g, jsonify, request, send_file
+from flask_cors import CORS
 import jwt
 
 load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET")
-
 DATABASE = "recipes.db"
 
 app = Flask(__name__)
@@ -270,7 +268,6 @@ def login():
             401,
         )
 
-    # Issue signed JWT with identity and role claims
     payload = {
         "user_id": row["id"],
         "username": row["username"],
@@ -291,41 +288,37 @@ def login():
 def home():
     return send_file("index.html")
 
+
 @app.route("/recipes", methods=["GET"])
 def list_recipes():
-  db = get_db()
-  current_user_id = None
-  current_role = "user"
+    db = get_db()
+    current_user_id = None
+    current_role = "user"
 
-  # Extract token if supplied
-  auth_header = request.headers.get("Authorization")
-  if auth_header and auth_header.startswith("Bearer "):
-    token = auth_header.split(" ", 1)[1]
-    try:
-      claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-      current_user_id = claims.get("user_id")
-      current_role = claims.get("role", "user")
-    except (jwt.PyJWTError, KeyError):
-      pass  # Fall back to anonymous
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            current_user_id = claims.get("user_id")
+            current_role = claims.get("role", "user")
+        except (jwt.PyJWTError, KeyError):
+            pass
 
-  # Admin sees ALL recipes in the system
-  if current_role == "admin":
-    rows = db.execute("SELECT * FROM recipes ORDER BY id").fetchall()
+    if current_role == "admin":
+        rows = db.execute("SELECT * FROM recipes ORDER BY id").fetchall()
+    elif current_user_id is not None:
+        rows = db.execute(
+            "SELECT * FROM recipes WHERE is_public = 1 OR user_id = ? ORDER BY"
+            " id",
+            (current_user_id,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT * FROM recipes WHERE is_public = 1 ORDER BY id"
+        ).fetchall()
 
-  # Ordinary logged-in user sees public + their own private recipes
-  elif current_user_id is not None:
-    rows = db.execute(
-        "SELECT * FROM recipes WHERE is_public = 1 OR user_id = ? ORDER BY id",
-        (current_user_id,),
-    ).fetchall()
-
-  # Anonymous visitor only sees public recipes
-  else:
-    rows = db.execute(
-        "SELECT * FROM recipes WHERE is_public = 1 ORDER BY id"
-    ).fetchall()
-
-  return jsonify([recipe_to_dict(r) for r in rows]), 200
+    return jsonify([recipe_to_dict(r) for r in rows]), 200
 
 
 @app.route("/recipes/<int:recipe_id>", methods=["GET"])
@@ -338,11 +331,9 @@ def get_recipe(recipe_id):
     if row is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    # Public recipes require no auth
     if row["is_public"]:
         return jsonify(recipe_to_dict(row)), 200
 
-    # Private recipes require verified token matching owner
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return (
@@ -457,7 +448,6 @@ def update_recipe(recipe_id):
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    # Ownership check with admin override
     if recipe["user_id"] != current_user_id and current_role != "admin":
         return (
             jsonify(
@@ -501,7 +491,6 @@ def delete_recipe(recipe_id):
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    # Ownership check with admin override
     if recipe["user_id"] != current_user_id and current_role != "admin":
         return (
             jsonify(
@@ -517,7 +506,3 @@ def delete_recipe(recipe_id):
     db.commit()
 
     return "", 204
-
-
-if __name__ == "__main__":
-    app.run(port=5001, debug=True)
