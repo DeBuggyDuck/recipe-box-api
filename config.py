@@ -1,9 +1,13 @@
+import os
+
 class Config:
     DEBUG = False
     TESTING = False
-    DATABASE = "recipes.db"
-    JWT_SECRET = None
+    DATABASE = os.environ.get("DATABASE_URL", "recipes.db")
 
+    JWT_SECRET = os.environ.get("JWT_SECRET")
+    if not JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required but not set in the environment")
 
 class DevelopmentConfig(Config):
     DEBUG = True
