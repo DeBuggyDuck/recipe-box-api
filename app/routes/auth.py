@@ -1,10 +1,7 @@
-from datetime import datetime, timedelta, timezone
-import sqlite3
-from flask import Blueprint, current_app, jsonify, request
-import jwt
+from flask import Blueprint, jsonify, request
 
-from app import get_db, user_to_dict
-from auth_utils import hash_password, verify_password
+from app.db import get_db
+from app.services.auth_service import get_current_user, login_user, register_user
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -23,18 +20,10 @@ def register():
             400,
         )
 
-    username = data.get("username")
-    email = data.get("email")
-    password = data.get("password")
+    db = get_db()
+    user, error = register_user(db, data)
 
-    if (
-        not isinstance(username, str)
-        or not username.strip()
-        or not isinstance(email, str)
-        or not email.strip()
-        or not isinstance(password, str)
-        or not password.strip()
-    ):
+    if error == "validation_error":
         return (
             jsonify(
                 {
@@ -48,21 +37,7 @@ def register():
             400,
         )
 
-    clean_username = username.strip()
-    clean_email = email.strip()
-
-    db = get_db()
-    hashed_pw = hash_password(password)
-    created_at = datetime.now(timezone.utc).isoformat()
-
-    try:
-        cur = db.execute(
-            "INSERT INTO users (username, email, password_hash, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (clean_username, clean_email, hashed_pw, created_at),
-        )
-        db.commit()
-    except sqlite3.IntegrityError:
+    if error == "user_exists":
         return (
             jsonify(
                 {
@@ -75,12 +50,7 @@ def register():
             409,
         )
 
-    row = db.execute(
-        "SELECT id, username, email, role, created_at FROM users WHERE id = ?",
-        (cur.lastrowid,),
-    ).fetchone()
-
-    return jsonify(user_to_dict(row)), 201
+    return jsonify(user), 201
 
 
 @auth_bp.route("/login", methods=["POST"])
@@ -97,15 +67,10 @@ def login():
             400,
         )
 
-    username = data.get("username")
-    password = data.get("password")
+    db = get_db()
+    token, error = login_user(db, data)
 
-    if (
-        not isinstance(username, str)
-        or not username.strip()
-        or not isinstance(password, str)
-        or not password.strip()
-    ):
+    if error == "validation_error":
         return (
             jsonify(
                 {
@@ -118,14 +83,7 @@ def login():
             400,
         )
 
-    db = get_db()
-    query = (
-        "SELECT id, username, email, password_hash, role, created_at "
-        "FROM users WHERE username = ?"
-    )
-    row = db.execute(query, (username.strip(),)).fetchone()
-
-    if row is None or not verify_password(row["password_hash"], password):
+    if error == "invalid_credentials":
         return (
             jsonify(
                 {"error": "Unauthorized", "message": "Invalid credentials"}
@@ -133,14 +91,36 @@ def login():
             401,
         )
 
-    payload = {
-        "user_id": row["id"],
-        "username": row["username"],
-        "role": row["role"],
-        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-    }
-
-    token = jwt.encode(
-        payload, current_app.config["JWT_SECRET"], algorithm="HS256"
-    )
     return jsonify({"token": token}), 200
+
+
+@auth_bp.route("/me", methods=["GET"])
+def me():
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {
+                    "error": "Unauthorized",
+                    "message": "Missing or invalid token",
+                }
+            ),
+            401,
+        )
+
+    token = auth_header.split(" ", 1)[1]
+    db = get_db()
+    user, error = get_current_user(db, token)
+
+    if error == "invalid_token":
+        return (
+            jsonify(
+                {
+                    "error": "Unauthorized",
+                    "message": "Missing or invalid token",
+                }
+            ),
+            401,
+        )
+
+    return jsonify(user), 200
