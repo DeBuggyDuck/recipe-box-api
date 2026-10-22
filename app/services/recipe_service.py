@@ -1,39 +1,34 @@
-import sqlite3
+from sqlalchemy import or_
 
-from app.models import insert_recipe
+from app import recipe_to_dict
+from app.models import Recipe
 
 
-def create_recipe(db, user_id: int, data: dict | None) -> tuple[dict | None, str | None]:
-    """Execute recipe creation with validation and return the record or an error code.
+def list_recipes_for_user(
+    current_user_id: int | None,
+    current_role: str = "user",
+) -> list[dict]:
+    query = Recipe.query
 
-    Args:
-        db: SQLite database connection.
-        user_id: The ID of the authenticated user creating the recipe.
-        data: Request payload containing title, ingredients, instructions, and is_public flag.
-
-    Returns:
-        tuple[dict | None, str | None]:
-            - (recipe_dict, None) on successful insertion.
-            - (None, "missing_required_fields") if title or ingredients are missing/falsy.
-            - (None, "duplicate_title") if a recipe with that title already exists.
-    """
-    if not data or not data.get("title") or not data.get("ingredients"):
-        return None, "missing_required_fields"
-
-    title = data["title"]
-    ingredients = data["ingredients"]
-    instructions = data.get("instructions", "")
-    is_public = 1 if data.get("is_public", True) else 0
-
-    try:
-        recipe = insert_recipe(
-            db,
-            title=title,
-            ingredients=ingredients,
-            instructions=instructions,
-            is_public=is_public,
-            user_id=user_id,
+    if current_role == "admin":
+        recipes = query.order_by(Recipe.id.asc()).all()
+    elif current_user_id is not None:
+        recipes = (
+            query.filter(
+                or_(Recipe.is_public == 1, Recipe.user_id == current_user_id)
+            )
+            .order_by(Recipe.id.asc())
+            .all()
         )
-        return recipe, None
-    except sqlite3.IntegrityError:
-        return None, "duplicate_title"
+    else:
+        recipes = (
+            query.filter(Recipe.is_public == 1)
+            .order_by(Recipe.id.asc())
+            .all()
+        )
+
+    return [recipe_to_dict(r) for r in recipes]
+
+
+def get_recipe_by_id(recipe_id: int) -> Recipe | None:
+    return Recipe.query.get(recipe_id)

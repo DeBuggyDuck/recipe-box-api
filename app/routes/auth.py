@@ -1,6 +1,5 @@
 from flask import Blueprint, jsonify, request
 
-from app.db import get_db
 from app.services.auth_service import get_current_user, login_user, register_user
 
 auth_bp = Blueprint("auth", __name__)
@@ -20,8 +19,7 @@ def register():
             400,
         )
 
-    db = get_db()
-    user, error = register_user(db, data)
+    user, error = register_user(data)
 
     if error == "validation_error":
         return (
@@ -67,8 +65,7 @@ def login():
             400,
         )
 
-    db = get_db()
-    token, error = login_user(db, data)
+    token, error = login_user(data)
 
     if error == "validation_error":
         return (
@@ -109,8 +106,7 @@ def me():
         )
 
     token = auth_header.split(" ", 1)[1]
-    db = get_db()
-    user, error = get_current_user(db, token)
+    user, error = get_current_user(token)
 
     if error == "invalid_token":
         return (
