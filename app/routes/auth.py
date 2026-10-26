@@ -1,10 +1,12 @@
 from flask import Blueprint, jsonify, request
 
+from app.extensions import limiter
 from app.services.auth_service import get_current_user, login_user, register_user
 
 auth_bp = Blueprint("auth", __name__)
 
 
+@limiter.limit("3 per minute")
 @auth_bp.route("/register", methods=["POST"])
 def register():
     data = request.get_json(silent=True)
@@ -52,6 +54,7 @@ def register():
 
 
 @auth_bp.route("/login", methods=["POST"])
+@limiter.limit("3 per minute")
 def login():
     data = request.get_json(silent=True)
     if not data:

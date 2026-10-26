@@ -7,7 +7,7 @@ from flask import Flask, current_app, g, jsonify, request, send_file
 from flask_cors import CORS
 import jwt
 
-from app.extensions import db, migrate, cache
+from app.extensions import db, migrate, cache, limiter
 from config import DevelopmentConfig, ProductionConfig, TestingConfig
 
 
@@ -121,6 +121,7 @@ def create_app(config_name: str | None = None) -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
     cache.init_app(app)
+    limiter.init_app(app)
 
     # Enforce SQLite Foreign Key constraints
     from sqlalchemy import event

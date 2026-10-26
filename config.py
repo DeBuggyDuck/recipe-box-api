@@ -13,9 +13,13 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     JWT_SECRET = os.environ.get("JWT_SECRET")
 
-    # Flask-Caching defaults
+    # Flask-Caching
     CACHE_TYPE = "SimpleCache"
     CACHE_DEFAULT_TIMEOUT = 30
+
+    # Flask-Limiter
+    RATELIMIT_STORAGE_URI = "memory://"
+    RATELIMIT_DEFAULT = "200 per day;50 per hour"
 
 
 class DevelopmentConfig(Config):
@@ -29,6 +33,7 @@ class TestingConfig(Config):
         f"sqlite:///{os.path.join(BASE_DIR, 'recipes_test.db')}"
     )
     CACHE_TYPE = "NullCache"
+    RATELIMIT_ENABLED = True
 
 
 class ProductionConfig(Config):
