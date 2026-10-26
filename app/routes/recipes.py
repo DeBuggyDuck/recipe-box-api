@@ -3,7 +3,7 @@ import jwt
 from sqlalchemy.exc import IntegrityError
 
 from app import recipe_to_dict, token_required
-from app.extensions import db
+from app.extensions import db, cache
 from app.models import Recipe
 from app.services.recipe_service import (
     get_recipe_by_id,
@@ -14,6 +14,7 @@ recipes_bp = Blueprint("recipes", __name__)
 
 
 @recipes_bp.route("", methods=["GET"])
+@cache.cached(timeout=30)
 def list_recipes():
     current_user_id = None
     current_role = "user"
@@ -74,13 +75,13 @@ def create_recipe():
 
 @recipes_bp.route("/<int:recipe_id>", methods=["GET"])
 def get_recipe(recipe_id):
-    recipe = get_recipe_by_id(recipe_id)
+    row = get_recipe_by_id(recipe_id)
 
-    if recipe is None:
+    if row is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe.is_public:
-        return jsonify(recipe_to_dict(recipe)), 200
+    if row.is_public:
+        return jsonify(recipe_to_dict(row)), 200
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -115,7 +116,7 @@ def get_recipe(recipe_id):
             401,
         )
 
-    if recipe.user_id != current_user_id:
+    if row.user_id != current_user_id:
         return (
             jsonify(
                 {"error": "Forbidden", "message": "You do not own this recipe"}
@@ -123,7 +124,7 @@ def get_recipe(recipe_id):
             403,
         )
 
-    return jsonify(recipe_to_dict(recipe)), 200
+    return jsonify(recipe_to_dict(row)), 200
 
 
 @recipes_bp.route("/<int:recipe_id>", methods=["PATCH"])
@@ -136,15 +137,11 @@ def update_recipe(recipe_id):
     if not data:
         return jsonify({"error": "a JSON body is required"}), 400
 
-    allowed_fields = {"title", "ingredients", "instructions", "is_public"}
-    if not any(field in data for field in allowed_fields):
-        return jsonify({"error": "nothing to update"}), 400
-
-    recipe = Recipe.query.get(recipe_id)
+    recipe = get_recipe_by_id(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe.user.id != current_user_id and current_role != "admin":
+    if recipe.user_id != current_user_id and current_role != "admin":
         return (
             jsonify(
                 {
@@ -182,7 +179,7 @@ def delete_recipe(recipe_id):
     current_user_id = g.current_user_id
     current_role = g.current_role
 
-    recipe = Recipe.query.get(recipe_id)
+    recipe = get_recipe_by_id(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 

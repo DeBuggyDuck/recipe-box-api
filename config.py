@@ -7,18 +7,19 @@ class Config:
     DEBUG = False
     TESTING = False
     DATABASE = os.environ.get("DATABASE_URL", "recipes.db")
-    
-    # PUT IT HERE:
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         "DATABASE_URL", f"sqlite:///{os.path.join(BASE_DIR, 'instance', 'recipes.db')}"
     )
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
     JWT_SECRET = os.environ.get("JWT_SECRET")
+
+    # Flask-Caching defaults
+    CACHE_TYPE = "SimpleCache"
+    CACHE_DEFAULT_TIMEOUT = 30
 
 
 class DevelopmentConfig(Config):
     DEBUG = True
-    # If you put it in Config above, you don't even need it here!
-    # Or, if you prefer overriding it specifically for dev, you can put it here.
 
 
 class TestingConfig(Config):
@@ -27,6 +28,7 @@ class TestingConfig(Config):
     SQLALCHEMY_DATABASE_URI = (
         f"sqlite:///{os.path.join(BASE_DIR, 'recipes_test.db')}"
     )
+    CACHE_TYPE = "NullCache"
 
 
 class ProductionConfig(Config):

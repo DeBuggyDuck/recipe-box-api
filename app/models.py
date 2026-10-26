@@ -10,7 +10,9 @@ class User(db.Model):
     password_hash = db.Column(db.String, nullable=False)
     created_at = db.Column(db.String, nullable=False)
     role = db.Column(db.String, nullable=False, server_default="user")
-    recipes = db.relationship("Recipe", back_populates="user")
+
+    recipes = db.relationship("Recipe", back_populates="user", lazy=True)
+
 
 class Recipe(db.Model):
     __tablename__ = "recipes"
@@ -20,9 +22,11 @@ class Recipe(db.Model):
     ingredients = db.Column(db.Text, nullable=False)
     instructions = db.Column(db.Text, nullable=False, server_default="")
     is_public = db.Column(db.Integer, nullable=False, server_default="1")
-    user = db.relationship("User", back_populates="recipes")
+    is_published = db.Column(db.Boolean, nullable=True)
+
     user_id = db.Column(
         db.Integer,
         db.ForeignKey("users.id"),
         nullable=False,
     )
+    user = db.relationship("User", back_populates="recipes")
