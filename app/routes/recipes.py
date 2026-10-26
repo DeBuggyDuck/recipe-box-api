@@ -1,11 +1,13 @@
-from flask import Blueprint, current_app, g, jsonify, request
-import jwt
+"""Recipe route handlers and endpoints."""
+
+from flask import Blueprint, g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from app import recipe_to_dict, token_required
-from app.extensions import db, cache
+from app.extensions import cache, db, limiter
 from app.models import Recipe
 from app.services.recipe_service import (
+    add_rating_for_recipe,
     get_recipe_by_id,
     list_recipes_for_user,
 )
@@ -13,28 +15,22 @@ from app.services.recipe_service import (
 recipes_bp = Blueprint("recipes", __name__)
 
 
+# ==========================================
+# 1. LIST RECIPES (CACHED)
+# ==========================================
 @recipes_bp.route("", methods=["GET"])
 @cache.cached(timeout=30)
 def list_recipes():
-    current_user_id = None
-    current_role = "user"
-
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1)[1]
-        try:
-            claims = jwt.decode(
-                token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
-            )
-            current_user_id = claims.get("user_id")
-            current_role = claims.get("role", "user")
-        except (jwt.PyJWTError, KeyError):
-            pass
+    current_user_id = getattr(g, "current_user_id", None)
+    current_role = getattr(g, "current_role", "user")
 
     recipes = list_recipes_for_user(current_user_id, current_role)
     return jsonify(recipes), 200
 
 
+# ==========================================
+# 2. CREATE RECIPE
+# ==========================================
 @recipes_bp.route("", methods=["POST"])
 @token_required
 def create_recipe():
@@ -63,8 +59,6 @@ def create_recipe():
     try:
         db.session.add(recipe)
         db.session.commit()
-        # Invalidate cache on write so reads are immediately fresh
-        cache.clear()
     except IntegrityError:
         db.session.rollback()
         return (
@@ -72,11 +66,15 @@ def create_recipe():
             409,
         )
 
+    cache.clear()
     return jsonify(recipe_to_dict(recipe)), 201
 
 
+# ==========================================
+# 3. GET SINGLE RECIPE
+# ==========================================
 @recipes_bp.route("/<int:recipe_id>", methods=["GET"])
-def get_recipe(recipe_id):
+def get_recipe(recipe_id: int):
     recipe = get_recipe_by_id(recipe_id)
 
     if recipe is None:
@@ -85,43 +83,16 @@ def get_recipe(recipe_id):
     if recipe.is_public:
         return jsonify(recipe_to_dict(recipe)), 200
 
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return (
-            jsonify(
-                {"error": "Unauthorized", "message": "Missing or invalid token"}
-            ),
-            401,
-        )
+    current_user_id = getattr(g, "current_user_id", None)
+    current_role = getattr(g, "current_role", "user")
 
-    token = auth_header.split(" ", 1)[1]
-    try:
-        claims = jwt.decode(
-            token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
-        )
-        current_user_id = claims["user_id"]
-    except jwt.ExpiredSignatureError:
+    if recipe.user_id != current_user_id and current_role != "admin":
         return (
             jsonify(
                 {
-                    "error": "Unauthorized",
-                    "message": "Token has expired. Please log in again.",
+                    "error": "Forbidden",
+                    "message": "You do not own this recipe",
                 }
-            ),
-            401,
-        )
-    except (jwt.PyJWTError, KeyError):
-        return (
-            jsonify(
-                {"error": "Unauthorized", "message": "Missing or invalid token"}
-            ),
-            401,
-        )
-
-    if recipe.user_id != current_user_id:
-        return (
-            jsonify(
-                {"error": "Forbidden", "message": "You do not own this recipe"}
             ),
             403,
         )
@@ -129,9 +100,12 @@ def get_recipe(recipe_id):
     return jsonify(recipe_to_dict(recipe)), 200
 
 
+# ==========================================
+# 4. UPDATE RECIPE
+# ==========================================
 @recipes_bp.route("/<int:recipe_id>", methods=["PATCH"])
 @token_required
-def update_recipe(recipe_id):
+def update_recipe(recipe_id: int):
     current_user_id = g.current_user_id
     current_role = g.current_role
 
@@ -143,7 +117,7 @@ def update_recipe(recipe_id):
     if not any(field in data for field in allowed_fields):
         return jsonify({"error": "nothing to update"}), 400
 
-    recipe = Recipe.query.get(recipe_id)
+    recipe = get_recipe_by_id(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -169,8 +143,6 @@ def update_recipe(recipe_id):
 
     try:
         db.session.commit()
-        # Invalidate cache on update
-        cache.clear()
     except IntegrityError:
         db.session.rollback()
         return (
@@ -178,16 +150,20 @@ def update_recipe(recipe_id):
             409,
         )
 
+    cache.clear()
     return jsonify(recipe_to_dict(recipe)), 200
 
 
+# ==========================================
+# 5. DELETE RECIPE
+# ==========================================
 @recipes_bp.route("/<int:recipe_id>", methods=["DELETE"])
 @token_required
-def delete_recipe(recipe_id):
+def delete_recipe(recipe_id: int):
     current_user_id = g.current_user_id
     current_role = g.current_role
 
-    recipe = Recipe.query.get(recipe_id)
+    recipe = get_recipe_by_id(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -204,7 +180,56 @@ def delete_recipe(recipe_id):
 
     db.session.delete(recipe)
     db.session.commit()
-    # Invalidate cache on delete
     cache.clear()
 
     return "", 204
+
+
+# ==========================================
+# 6. CREATE RATING (RATE-LIMITED)
+# ==========================================
+@recipes_bp.route("/<int:recipe_id>/ratings", methods=["POST"])
+@limiter.limit("10 per minute")
+@token_required
+def create_rating(recipe_id: int):
+    current_user_id = g.current_user_id
+    data = request.get_json(silent=True) or {}
+
+    score = data.get("score")
+    comment = data.get("comment")
+
+    rating, error = add_rating_for_recipe(
+        user_id=current_user_id,
+        recipe_id=recipe_id,
+        score=score,
+        comment=comment,
+    )
+
+    if error == "not_found":
+        return jsonify({"error": "Not Found", "message": "Recipe not found"}), 404
+
+    if error == "bad_request":
+        return (
+            jsonify(
+                {
+                    "error": "Bad Request",
+                    "message": (
+                        "score is required and must be an integer between 1 and 5"
+                    ),
+                }
+            ),
+            400,
+        )
+
+    if error == "conflict":
+        return (
+            jsonify(
+                {
+                    "error": "Conflict",
+                    "message": "You have already rated this recipe",
+                }
+            ),
+            409,
+        )
+
+    return jsonify(rating), 201
