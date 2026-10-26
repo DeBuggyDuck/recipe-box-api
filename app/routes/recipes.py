@@ -63,6 +63,8 @@ def create_recipe():
     try:
         db.session.add(recipe)
         db.session.commit()
+        # Invalidate cache on write so reads are immediately fresh
+        cache.clear()
     except IntegrityError:
         db.session.rollback()
         return (
@@ -75,13 +77,13 @@ def create_recipe():
 
 @recipes_bp.route("/<int:recipe_id>", methods=["GET"])
 def get_recipe(recipe_id):
-    row = get_recipe_by_id(recipe_id)
+    recipe = get_recipe_by_id(recipe_id)
 
-    if row is None:
+    if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if row.is_public:
-        return jsonify(recipe_to_dict(row)), 200
+    if recipe.is_public:
+        return jsonify(recipe_to_dict(recipe)), 200
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -116,7 +118,7 @@ def get_recipe(recipe_id):
             401,
         )
 
-    if row.user_id != current_user_id:
+    if recipe.user_id != current_user_id:
         return (
             jsonify(
                 {"error": "Forbidden", "message": "You do not own this recipe"}
@@ -124,7 +126,7 @@ def get_recipe(recipe_id):
             403,
         )
 
-    return jsonify(recipe_to_dict(row)), 200
+    return jsonify(recipe_to_dict(recipe)), 200
 
 
 @recipes_bp.route("/<int:recipe_id>", methods=["PATCH"])
@@ -137,7 +139,11 @@ def update_recipe(recipe_id):
     if not data:
         return jsonify({"error": "a JSON body is required"}), 400
 
-    recipe = get_recipe_by_id(recipe_id)
+    allowed_fields = {"title", "ingredients", "instructions", "is_public"}
+    if not any(field in data for field in allowed_fields):
+        return jsonify({"error": "nothing to update"}), 400
+
+    recipe = Recipe.query.get(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -163,6 +169,8 @@ def update_recipe(recipe_id):
 
     try:
         db.session.commit()
+        # Invalidate cache on update
+        cache.clear()
     except IntegrityError:
         db.session.rollback()
         return (
@@ -179,7 +187,7 @@ def delete_recipe(recipe_id):
     current_user_id = g.current_user_id
     current_role = g.current_role
 
-    recipe = get_recipe_by_id(recipe_id)
+    recipe = Recipe.query.get(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -196,5 +204,7 @@ def delete_recipe(recipe_id):
 
     db.session.delete(recipe)
     db.session.commit()
+    # Invalidate cache on delete
+    cache.clear()
 
     return "", 204
