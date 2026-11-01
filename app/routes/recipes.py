@@ -1,6 +1,8 @@
 """Recipe route handlers and endpoints."""
 
-from flask import Blueprint, g, jsonify, request
+import asyncio
+from flask import Blueprint, current_app, g, jsonify, request
+import httpx
 from sqlalchemy.exc import IntegrityError
 
 from app import recipe_to_dict, token_required
@@ -117,7 +119,7 @@ def update_recipe(recipe_id: int):
     if not any(field in data for field in allowed_fields):
         return jsonify({"error": "nothing to update"}), 400
 
-    recipe = get_recipe_by_id(recipe_id)
+    recipe = Recipe.query.get(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -163,7 +165,7 @@ def delete_recipe(recipe_id: int):
     current_user_id = g.current_user_id
     current_role = g.current_role
 
-    recipe = get_recipe_by_id(recipe_id)
+    recipe = Recipe.query.get(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -233,3 +235,41 @@ def create_rating(recipe_id: int):
         )
 
     return jsonify(rating), 201
+
+
+# ==========================================
+# 7. ASYNC FAN-OUT WITH BOUNDED FALLBACKS
+# ==========================================
+async def fetch_recipe(client: httpx.AsyncClient, path: str, timeout: float = 0.5) -> dict:
+    try:
+        response = await asyncio.wait_for(client.get(path), timeout=timeout)
+        return {
+            "source": path,
+            "status": "success",
+            "data": response.json(),
+        }
+    except asyncio.TimeoutError:
+        return {
+            "source": path,
+            "status": "fallback",
+            "reason": "timeout",
+            "data": None,
+        }
+    except httpx.RequestError:
+        return {
+            "source": path,
+            "status": "fallback",
+            "reason": "connection_error",
+            "data": None,
+        }
+
+
+@recipes_bp.route("/async-test", methods=["GET"])
+async def async_test():
+    base_url = current_app.config["SLOW_SERVICE_URL"]
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        paths = ["/recipes", "/recipes", "/recipes"]
+        results = await asyncio.gather(
+            *(fetch_recipe(client, p, timeout=0.5) for p in paths)
+        )
+    return jsonify(results), 200

@@ -21,6 +21,11 @@ class Config:
     RATELIMIT_STORAGE_URI = "memory://"
     RATELIMIT_DEFAULT = "200 per day;50 per hour"
 
+    # Slow Service URL:
+    SLOW_SERVICE_URL = os.environ.get(
+        "SLOW_SERVICE_URL", "http://127.0.0.1:5001"
+    )
+
 
 class DevelopmentConfig(Config):
     DEBUG = True
