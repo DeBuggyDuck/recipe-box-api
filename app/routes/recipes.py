@@ -1,15 +1,14 @@
-"""Recipe route handlers and endpoints."""
+"""Recipe route handlers and endpoints for the recipes microservice."""
 
-import asyncio
+import os
 from flask import Blueprint, current_app, g, jsonify, request
-import httpx
+import jwt
 from sqlalchemy.exc import IntegrityError
 
 from app import recipe_to_dict, token_required
-from app.extensions import cache, db, limiter
+from app.extensions import db
 from app.models import Recipe
 from app.services.recipe_service import (
-    add_rating_for_recipe,
     get_recipe_by_id,
     list_recipes_for_user,
 )
@@ -18,28 +17,79 @@ recipes_bp = Blueprint("recipes", __name__)
 
 
 # ==========================================
-# 1. LIST RECIPES (CACHED)
+# 1. LIST RECIPES
 # ==========================================
 @recipes_bp.route("", methods=["GET"])
-@cache.cached(timeout=30)
 def list_recipes():
-    current_user_id = getattr(g, "current_user_id", None)
-    current_role = getattr(g, "current_role", "user")
+    current_user_id = None
+    current_role = "user"
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            claims = jwt.decode(
+                token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
+            )
+            current_user_id = claims.get("user_id")
+            current_role = claims.get("role", "user")
+        except (jwt.PyJWTError, KeyError):
+            pass
 
     recipes = list_recipes_for_user(current_user_id, current_role)
     return jsonify(recipes), 200
 
 
 # ==========================================
-# 2. CREATE RECIPE
+# 2. CREATE RECIPE (BOUNDARY C CONTRACT)
 # ==========================================
 @recipes_bp.route("", methods=["POST"])
-@token_required
 def create_recipe():
-    current_user_id = g.current_user_id
-    data = request.get_json(silent=True)
+    # 1. Inspect Boundary C headers
+    auth_header = request.headers.get("Authorization")
+    internal_token = request.headers.get("X-Internal-Service-Token")
 
-    if not data or not data.get("title") or not data.get("ingredients"):
+    # 2. Verify end-user JWT (401 on missing or invalid)
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    token = auth_header.split(" ", 1)[1]
+    try:
+        claims = jwt.decode(
+            token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
+        )
+        current_user_id = claims["user_id"]
+    except (jwt.PyJWTError, KeyError):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    # 3. Verify internal caller identity token (403 on missing or invalid)
+    expected_token = os.environ.get(
+        "INTERNAL_SERVICE_TOKEN", "dev-internal-secret"
+    )
+    if not internal_token or internal_token != expected_token:
+        return (
+            jsonify(
+                {
+                    "error": "Forbidden",
+                    "message": "Invalid or missing internal service token",
+                }
+            ),
+            403,
+        )
+
+    # 4. Payload validation & creation
+    data = request.get_json(silent=True) or {}
+    if not data.get("title") or not data.get("ingredients"):
         return (
             jsonify(
                 {
@@ -68,7 +118,6 @@ def create_recipe():
             409,
         )
 
-    cache.clear()
     return jsonify(recipe_to_dict(recipe)), 201
 
 
@@ -85,16 +134,34 @@ def get_recipe(recipe_id: int):
     if recipe.is_public:
         return jsonify(recipe_to_dict(recipe)), 200
 
-    current_user_id = getattr(g, "current_user_id", None)
-    current_role = getattr(g, "current_role", "user")
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
+
+    token = auth_header.split(" ", 1)[1]
+    try:
+        claims = jwt.decode(
+            token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
+        )
+        current_user_id = claims.get("user_id")
+        current_role = claims.get("role", "user")
+    except (jwt.PyJWTError, KeyError):
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "Missing or invalid token"}
+            ),
+            401,
+        )
 
     if recipe.user_id != current_user_id and current_role != "admin":
         return (
             jsonify(
-                {
-                    "error": "Forbidden",
-                    "message": "You do not own this recipe",
-                }
+                {"error": "Forbidden", "message": "You do not own this recipe"}
             ),
             403,
         )
@@ -108,8 +175,8 @@ def get_recipe(recipe_id: int):
 @recipes_bp.route("/<int:recipe_id>", methods=["PATCH"])
 @token_required
 def update_recipe(recipe_id: int):
-    current_user_id = g.current_user_id
-    current_role = g.current_role
+    token_user_id = g.current_user_id
+    token_role = g.current_role
 
     data = request.get_json(silent=True)
     if not data:
@@ -123,7 +190,7 @@ def update_recipe(recipe_id: int):
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe.user_id != current_user_id and current_role != "admin":
+    if recipe.user_id != token_user_id and token_role != "admin":
         return (
             jsonify(
                 {
@@ -152,7 +219,6 @@ def update_recipe(recipe_id: int):
             409,
         )
 
-    cache.clear()
     return jsonify(recipe_to_dict(recipe)), 200
 
 
@@ -162,14 +228,14 @@ def update_recipe(recipe_id: int):
 @recipes_bp.route("/<int:recipe_id>", methods=["DELETE"])
 @token_required
 def delete_recipe(recipe_id: int):
-    current_user_id = g.current_user_id
-    current_role = g.current_role
+    token_user_id = g.current_user_id
+    token_role = g.current_role
 
     recipe = Recipe.query.get(recipe_id)
     if recipe is None:
         return jsonify({"error": "recipe not found"}), 404
 
-    if recipe.user_id != current_user_id and current_role != "admin":
+    if recipe.user_id != token_user_id and token_role != "admin":
         return (
             jsonify(
                 {
@@ -182,94 +248,5 @@ def delete_recipe(recipe_id: int):
 
     db.session.delete(recipe)
     db.session.commit()
-    cache.clear()
 
     return "", 204
-
-
-# ==========================================
-# 6. CREATE RATING (RATE-LIMITED)
-# ==========================================
-@recipes_bp.route("/<int:recipe_id>/ratings", methods=["POST"])
-@limiter.limit("10 per minute")
-@token_required
-def create_rating(recipe_id: int):
-    current_user_id = g.current_user_id
-    data = request.get_json(silent=True) or {}
-
-    score = data.get("score")
-    comment = data.get("comment")
-
-    rating, error = add_rating_for_recipe(
-        user_id=current_user_id,
-        recipe_id=recipe_id,
-        score=score,
-        comment=comment,
-    )
-
-    if error == "not_found":
-        return jsonify({"error": "Not Found", "message": "Recipe not found"}), 404
-
-    if error == "bad_request":
-        return (
-            jsonify(
-                {
-                    "error": "Bad Request",
-                    "message": (
-                        "score is required and must be an integer between 1 and 5"
-                    ),
-                }
-            ),
-            400,
-        )
-
-    if error == "conflict":
-        return (
-            jsonify(
-                {
-                    "error": "Conflict",
-                    "message": "You have already rated this recipe",
-                }
-            ),
-            409,
-        )
-
-    return jsonify(rating), 201
-
-
-# ==========================================
-# 7. ASYNC FAN-OUT WITH BOUNDED FALLBACKS
-# ==========================================
-async def fetch_recipe(client: httpx.AsyncClient, path: str, timeout: float = 0.5) -> dict:
-    try:
-        response = await asyncio.wait_for(client.get(path), timeout=timeout)
-        return {
-            "source": path,
-            "status": "success",
-            "data": response.json(),
-        }
-    except asyncio.TimeoutError:
-        return {
-            "source": path,
-            "status": "fallback",
-            "reason": "timeout",
-            "data": None,
-        }
-    except httpx.RequestError:
-        return {
-            "source": path,
-            "status": "fallback",
-            "reason": "connection_error",
-            "data": None,
-        }
-
-
-@recipes_bp.route("/async-test", methods=["GET"])
-async def async_test():
-    base_url = current_app.config["SLOW_SERVICE_URL"]
-    async with httpx.AsyncClient(base_url=base_url) as client:
-        paths = ["/recipes", "/recipes", "/recipes"]
-        results = await asyncio.gather(
-            *(fetch_recipe(client, p, timeout=0.5) for p in paths)
-        )
-    return jsonify(results), 200
