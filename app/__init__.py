@@ -158,4 +158,9 @@ def create_app(config_name: str | None = None) -> Flask:
             200,
         )
 
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return jsonify({"status": "ok"}), 200
+
     return app
